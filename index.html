@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pedreira Boi Preto — Controle de Estoque</title>
+<link rel="icon" href="data:,">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin><\/script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin><\/script>
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { -webkit-font-smoothing: antialiased; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+const { useState, useEffect, useMemo, useRef } = React;
+// =====================================================================
+// CONFIGURAÇÃO — preencha com os dados do seu projeto Supabase
+// (Settings > API no painel do Supabase)
+// =====================================================================
+const SUPABASE_URL = "https://jsimgxangsvgerfgcfsr.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_izG70CFk4hWbN_4Tp6Wg0g_0fCWFS7m";
+// =====================================================================
+const CONFIGURED = !SUPABASE_URL.startsWith("COLE_AQUI") && !SUPABASE_ANON_KEY.startsWith("COLE_AQUI");
+async function kvGet(key) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}&select=value`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+    });
+    if (!res.ok)
+        throw new Error("Falha ao carregar dados");
+    const data = await res.json();
+    return data.length ? JSON.parse(data[0].value) : [];
+}
+async function kvSet(key, value) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store`, {
+        method: "POST",
+        headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            "Content-Type": "application/json",
+            Prefer: "resolution=merge-duplicates"
+        },
+        body: JSON.stringify({ key, value: JSON.stringify(value) })
+    });
+    if (!res.ok)
+        throw new Error("Falha ao salvar dados");
+}
+const ITEMS_KEY = "almox:items";
+const MOV_KEY = "almox:movements";
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function fmtNum(n) { return Number(n || 0).toLocaleString("pt-BR"); }
+function fmtDate(iso) {
+    if (!iso)
+        return "-";
+    const d = new Date(iso);
+    return d.toLocaleDateString("pt-BR") + " " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+function stockStatus(item) {
+    const q = Number(item.quantidade) || 0;
+    const min = Number(item.estoqueMinimo) || 0;
+    if (q <= min)
+        return "danger";
+    if (q <= min * 1.5)
+        return "amber";
+    return "success";
+}
+// ---------- ícones (SVG simples, sem dependências) ----------
+function Ic({ children, size = 16, className = "" }) {
+    return (React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className: className }, children));
+}
+const IconPackage = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M21 8l-9-5-9 5v8l9 5 9-5V8z" }),
+    React.createElement("path", { d: "M3 8l9 5 9-5" }),
+    React.createElement("path", { d: "M12 13v8" }));
+const IconBoxes = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M3 7l6-3 6 3v6l-6 3-6-3V7z" }),
+    React.createElement("path", { d: "M15 10l6-3v6l-6 3" }),
+    React.createElement("path", { d: "M9 10v6" }),
+    React.createElement("path", { d: "M3 7l6 3" }),
+    React.createElement("path", { d: "M9 10l6-3" }));
+const IconDown = (p) => React.createElement(Ic, { ...p },
+    React.createElement("circle", { cx: "12", cy: "12", r: "9" }),
+    React.createElement("path", { d: "M12 8v8M9 13l3 3 3-3" }));
+const IconUp = (p) => React.createElement(Ic, { ...p },
+    React.createElement("circle", { cx: "12", cy: "12", r: "9" }),
+    React.createElement("path", { d: "M12 16V8M9 11l3-3 3 3" }));
+const IconAlert = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M12 3l10 18H2L12 3z" }),
+    React.createElement("path", { d: "M12 10v4" }),
+    React.createElement("path", { d: "M12 17h.01" }));
+const IconSearch = (p) => React.createElement(Ic, { ...p },
+    React.createElement("circle", { cx: "11", cy: "11", r: "7" }),
+    React.createElement("path", { d: "M21 21l-4.3-4.3" }));
+const IconPlus = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M12 5v14M5 12h14" }));
+const IconTrash = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" }));
+const IconEdit = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M16 3l5 5-11 11H5v-5L16 3z" }));
+const IconDownload = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M12 3v12M7 11l5 5 5-5" }),
+    React.createElement("path", { d: "M5 21h14" }));
+const IconUpload = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M12 21V9M7 13l5-5 5 5" }),
+    React.createElement("path", { d: "M5 21h14" }));
+const IconDash = (p) => React.createElement(Ic, { ...p },
+    React.createElement("rect", { x: "3", y: "3", width: "7", height: "7" }),
+    React.createElement("rect", { x: "14", y: "3", width: "7", height: "7" }),
+    React.createElement("rect", { x: "3", y: "14", width: "7", height: "7" }),
+    React.createElement("rect", { x: "14", y: "14", width: "7", height: "7" }));
+const IconList = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M4 6h.01M4 12h.01M4 18h.01" }),
+    React.createElement("path", { d: "M9 6h11M9 12h11M9 18h11" }));
+const IconClipboard = (p) => React.createElement(Ic, { ...p },
+    React.createElement("rect", { x: "6", y: "4", width: "12", height: "17", rx: "2" }),
+    React.createElement("path", { d: "M9 4V3h6v1" }),
+    React.createElement("path", { d: "M9 10h6M9 14h6" }));
+const IconX = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M18 6L6 18M6 6l12 12" }));
+const IconChevron = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M6 9l6 6 6-6" }));
+const IconLoader = (p) => React.createElement(Ic, { ...p },
+    React.createElement("path", { d: "M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8" }));
+// ---------- componentes auxiliares ----------
+function Gauge({ item }) {
+    const q = Number(item.quantidade) || 0;
+    const min = Number(item.estoqueMinimo) || 0;
+    const ceiling = Math.max(q, min * 2, 1);
+    const fillPct = Math.min(100, (q / ceiling) * 100);
+    const minPct = Math.min(100, (min / ceiling) * 100);
+    const status = stockStatus(item);
+    return (React.createElement("div", { className: "gauge", title: `Mínimo: ${fmtNum(min)}` },
+        React.createElement("div", { className: "gauge-track" },
+            React.createElement("div", { className: `gauge-fill gauge-${status}`, style: { width: fillPct + "%" } }),
+            React.createElement("div", { className: "gauge-min", style: { left: minPct + "%" } }))));
+}
+function Badge({ status, children }) { return React.createElement("span", { className: `badge badge-${status}` }, children); }
+function Modal({ title, onClose, children, wide }) {
+    return (React.createElement("div", { className: "modal-backdrop", onMouseDown: (e) => { if (e.target === e.currentTarget)
+            onClose(); } },
+        React.createElement("div", { className: "modal" + (wide ? " modal-wide" : "") },
+            React.createElement("div", { className: "modal-head" },
+                React.createElement("h3", null, title),
+                React.createElement("button", { className: "icon-btn", onClick: onClose },
+                    React.createElement(IconX, { size: 18 }))),
+            React.createElement("div", { className: "modal-body" }, children))));
+}
+function ItemPicker({ items, value, onChange, placeholder }) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
+    const ref = useRef(null);
+    useEffect(() => {
+        function onDoc(e) { if (ref.current && !ref.current.contains(e.target))
+            setOpen(false); }
+        document.addEventListener("mousedown", onDoc);
+        return () => document.removeEventListener("mousedown", onDoc);
+    }, []);
+    const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        const base = !q ? items : items.filter(i => i.nome.toLowerCase().includes(q) || i.codigo.toLowerCase().includes(q));
+        return base.slice(0, 30);
+    }, [items, query]);
+    const selected = items.find(i => i.id === value);
+    return (React.createElement("div", { className: "picker", ref: ref },
+        React.createElement("button", { type: "button", className: "picker-input", onClick: () => setOpen(o => !o) },
+            React.createElement("span", { className: selected ? "" : "muted" }, selected ? `${selected.codigo} — ${selected.nome}` : (placeholder || "Selecione um item")),
+            React.createElement(IconChevron, { size: 16 })),
+        open && (React.createElement("div", { className: "picker-menu" },
+            React.createElement("div", { className: "picker-search" },
+                React.createElement(IconSearch, { size: 14 }),
+                React.createElement("input", { autoFocus: true, placeholder: "Buscar por c\u00F3digo ou nome...", value: query, onChange: e => setQuery(e.target.value) })),
+            React.createElement("div", { className: "picker-list" },
+                filtered.length === 0 && React.createElement("div", { className: "picker-empty" }, "Nenhum item encontrado"),
+                filtered.map(i => (React.createElement("button", { type: "button", key: i.id, className: "picker-item", onClick: () => { onChange(i.id); setOpen(false); setQuery(""); } },
+                    React.createElement("span", { className: "picker-code" }, i.codigo),
+                    React.createElement("span", null, i.nome),
+                    React.createElement("span", { className: "picker-qty" },
+                        fmtNum(i.quantidade),
+                        " ",
+                        i.unidade)))))))));
+}
+// ---------- tela de configuração pendente ----------
+function ConfigMissing() {
+    return (React.createElement("div", { className: "config-screen" },
+        React.createElement("div", { className: "config-card" },
+            React.createElement(IconAlert, { size: 26 }),
+            React.createElement("h2", null, "Configura\u00E7\u00E3o pendente"),
+            React.createElement("p", null,
+                "Este arquivo ainda n\u00E3o est\u00E1 ligado ao banco de dados. Abra o arquivo ",
+                React.createElement("code", null, "index.html"),
+                ", procure por ",
+                React.createElement("code", null, "SUPABASE_URL"),
+                " e ",
+                React.createElement("code", null, "SUPABASE_ANON_KEY"),
+                " no topo do c\u00F3digo e cole os valores do seu projeto Supabase (Settings \u2192 API)."))));
+}
+// ---------- App principal ----------
+function App() {
+    const [items, setItems] = useState([]);
+    const [movements, setMovements] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [errorMsg, setErrorMsg] = useState("");
+    const [view, setView] = useState("dashboard");
+    useEffect(() => {
+        if (!CONFIGURED) {
+            setLoading(false);
+            return;
+        }
+        (async () => {
+            try {
+                const [it, mv] = await Promise.all([kvGet(ITEMS_KEY), kvGet(MOV_KEY)]);
+                setItems(it);
+                setMovements(mv);
+            }
+            catch (e) {
+                setErrorMsg("Não foi possível conectar ao banco de dados. Verifique sua internet e as chaves do Supabase.");
+            }
+            setLoading(false);
+        })();
+    }, []);
+    async function persistItems(next) {
+        setItems(next);
+        try {
+            await kvSet(ITEMS_KEY, next);
+        }
+        catch {
+            setErrorMsg("Falha ao salvar. Tente novamente.");
+        }
+    }
+    async function persistMovements(next) {
+        setMovements(next);
+        try {
+            await kvSet(MOV_KEY, next);
+        }
+        catch {
+            setErrorMsg("Falha ao salvar. Tente novamente.");
+        }
+    }
+    if (!CONFIGURED)
+        return React.createElement(ConfigMissing, null);
+    const lowStockItems = useMemo(() => items.filter(i => Number(i.quantidade) <= Number(i.estoqueMinimo)), [items]);
+    return (React.createElement("div", { className: "almox-app" },
+        React.createElement("style", null, CSS),
+        React.createElement("aside", { className: "sidebar" },
+            React.createElement("div", { className: "brand" },
+                React.createElement("div", { className: "brand-mark" },
+                    React.createElement(IconBoxes, { size: 20 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "brand-title" }, "PEDREIRA BOI PRETO"),
+                    React.createElement("div", { className: "brand-sub" }, "controle de estoque"))),
+            React.createElement("nav", { className: "nav" },
+                React.createElement("button", { className: "nav-item" + (view === "dashboard" ? " active" : ""), onClick: () => setView("dashboard") },
+                    React.createElement(IconDash, { size: 17 }),
+                    " Painel"),
+                React.createElement("button", { className: "nav-item" + (view === "itens" ? " active" : ""), onClick: () => setView("itens") },
+                    React.createElement(IconPackage, { size: 17 }),
+                    " Itens ",
+                    items.length > 0 && React.createElement("span", { className: "nav-count" }, items.length)),
+                React.createElement("button", { className: "nav-item" + (view === "movimentacoes" ? " active" : ""), onClick: () => setView("movimentacoes") },
+                    React.createElement(IconList, { size: 17 }),
+                    " Movimenta\u00E7\u00F5es"),
+                React.createElement("button", { className: "nav-item" + (view === "relatorios" ? " active" : ""), onClick: () => setView("relatorios") },
+                    React.createElement(IconClipboard, { size: 17 }),
+                    " Relat\u00F3rios")),
+            lowStockItems.length > 0 && (React.createElement("button", { className: "sidebar-alert", onClick: () => setView("itens") },
+                React.createElement(IconAlert, { size: 15 }),
+                React.createElement("span", null,
+                    lowStockItems.length,
+                    " item(ns) abaixo do m\u00EDnimo")))),
+        React.createElement("main", { className: "main" },
+            errorMsg && React.createElement("div", { className: "error-banner" }, errorMsg),
+            loading ? (React.createElement("div", { className: "loading-screen" },
+                React.createElement(IconLoader, { className: "spin", size: 22 }),
+                " Carregando estoque...")) : view === "dashboard" ? (React.createElement(Dashboard, { items: items, movements: movements, lowStockItems: lowStockItems, setView: setView })) : view === "itens" ? (React.createElement(ItensView, { items: items, persistItems: persistItems })) : view === "movimentacoes" ? (React.createElement(MovimentacoesView, { items: items, movements: movements, persistItems: persistItems, persistMovements: persistMovements })) : (React.createElement(RelatoriosView, { items: items, movements: movements })))));
+}
+function Dashboard({ items, movements, lowStockItems, setView }) {
+    const totalQtd = items.reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
+    const now = new Date();
+    const movMes = movements.filter(m => { const d = new Date(m.data); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); });
+    const entradasMes = movMes.filter(m => m.tipo === "entrada").reduce((s, m) => s + Number(m.quantidade), 0);
+    const saidasMes = movMes.filter(m => m.tipo === "saida").reduce((s, m) => s + Number(m.quantidade), 0);
+    const recentMov = [...movements].sort((a, b) => new Date(b.data) - new Date(a.data)).slice(0, 6);
+    return (React.createElement("div", null,
+        React.createElement("header", { className: "view-head" },
+            React.createElement("div", null,
+                React.createElement("h1", null, "Painel do almoxarifado"),
+                React.createElement("p", { className: "subtitle" }, "Vis\u00E3o geral do estoque em tempo real"))),
+        React.createElement("div", { className: "cards-grid" },
+            React.createElement("div", { className: "stat-card" },
+                React.createElement("div", { className: "stat-icon icon-steel" },
+                    React.createElement(IconPackage, { size: 18 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "stat-value" }, fmtNum(items.length)),
+                    React.createElement("div", { className: "stat-label" }, "itens cadastrados"))),
+            React.createElement("div", { className: "stat-card" },
+                React.createElement("div", { className: "stat-icon icon-steel" },
+                    React.createElement(IconBoxes, { size: 18 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "stat-value" }, fmtNum(totalQtd)),
+                    React.createElement("div", { className: "stat-label" }, "unidades em estoque"))),
+            React.createElement("div", { className: "stat-card" },
+                React.createElement("div", { className: "stat-icon icon-success" },
+                    React.createElement(IconDown, { size: 18 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "stat-value" }, fmtNum(entradasMes)),
+                    React.createElement("div", { className: "stat-label" }, "entradas este m\u00EAs"))),
+            React.createElement("div", { className: "stat-card" },
+                React.createElement("div", { className: "stat-icon icon-danger" },
+                    React.createElement(IconUp, { size: 18 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "stat-value" }, fmtNum(saidasMes)),
+                    React.createElement("div", { className: "stat-label" }, "sa\u00EDdas este m\u00EAs")))),
+        React.createElement("div", { className: "split-grid" },
+            React.createElement("section", { className: "panel" },
+                React.createElement("div", { className: "panel-head" },
+                    React.createElement("h2", null,
+                        React.createElement(IconAlert, { size: 16 }),
+                        " Estoque baixo"),
+                    React.createElement("button", { className: "link-btn", onClick: () => setView("itens") }, "ver todos os itens")),
+                lowStockItems.length === 0 ? React.createElement("div", { className: "empty-mini" }, "Nenhum item abaixo do m\u00EDnimo. Tudo em ordem.") : (React.createElement("div", { className: "mini-list" }, lowStockItems.slice(0, 8).map(i => (React.createElement("div", { className: "mini-row", key: i.id },
+                    React.createElement("div", { className: "mini-info" },
+                        React.createElement("span", { className: "mini-code" }, i.codigo),
+                        React.createElement("span", null, i.nome)),
+                    React.createElement(Gauge, { item: i }),
+                    React.createElement("span", { className: "mini-qty" },
+                        fmtNum(i.quantidade),
+                        " / ",
+                        fmtNum(i.estoqueMinimo)))))))),
+            React.createElement("section", { className: "panel" },
+                React.createElement("div", { className: "panel-head" },
+                    React.createElement("h2", null,
+                        React.createElement(IconList, { size: 16 }),
+                        " \u00DAltimas movimenta\u00E7\u00F5es")),
+                recentMov.length === 0 ? React.createElement("div", { className: "empty-mini" }, "Nenhuma movimenta\u00E7\u00E3o registrada ainda.") : (React.createElement("div", { className: "mini-list" }, recentMov.map(m => (React.createElement("div", { className: "mini-row", key: m.id },
+                    m.tipo === "entrada" ? React.createElement(IconDown, { size: 16, className: "txt-success" }) : React.createElement(IconUp, { size: 16, className: "txt-danger" }),
+                    React.createElement("div", { className: "mini-info" },
+                        React.createElement("span", null, m.itemNome),
+                        React.createElement("span", { className: "mini-sub" }, fmtDate(m.data))),
+                    React.createElement("span", { className: "mini-qty" },
+                        m.tipo === "entrada" ? "+" : "-",
+                        fmtNum(m.quantidade)))))))))));
+}
+const emptyForm = { codigo: "", nome: "", categoria: "", unidade: "un", quantidade: 0, estoqueMinimo: 0, localizacao: "" };
+function ItensView({ items, persistItems }) {
+    const [query, setQuery] = useState("");
+    const [modal, setModal] = useState(null);
+    const [form, setForm] = useState(emptyForm);
+    const [editId, setEditId] = useState(null);
+    const [confirmDelete, setConfirmDelete] = useState(null);
+    const [importText, setImportText] = useState("");
+    const categorias = useMemo(() => [...new Set(items.map(i => i.categoria).filter(Boolean))], [items]);
+    const [catFilter, setCatFilter] = useState("");
+    const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        return items.filter(i => {
+            const matchesQ = !q || i.nome.toLowerCase().includes(q) || i.codigo.toLowerCase().includes(q) || (i.localizacao || "").toLowerCase().includes(q);
+            const matchesCat = !catFilter || i.categoria === catFilter;
+            return matchesQ && matchesCat;
+        });
+    }, [items, query, catFilter]);
+    function openAdd() { setForm(emptyForm); setEditId(null); setModal("add"); }
+    function openEdit(item) { setForm({ ...item }); setEditId(item.id); setModal("edit"); }
+    async function submitForm(e) {
+        e.preventDefault();
+        if (!form.codigo.trim() || !form.nome.trim())
+            return;
+        if (editId) {
+            await persistItems(items.map(i => i.id === editId ? { ...form, id: editId, quantidade: Number(form.quantidade), estoqueMinimo: Number(form.estoqueMinimo) } : i));
+        }
+        else {
+            const newItem = { ...form, id: uid(), quantidade: Number(form.quantidade) || 0, estoqueMinimo: Number(form.estoqueMinimo) || 0 };
+            await persistItems([newItem, ...items]);
+        }
+        setModal(null);
+    }
+    async function doDelete(id) { await persistItems(items.filter(i => i.id !== id)); setConfirmDelete(null); }
+    async function doImport() {
+        const lines = importText.split("\n").map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0)
+            return;
+        const delim = lines[0].includes(";") ? ";" : ",";
+        const newItems = [];
+        for (const line of lines) {
+            const cols = line.split(delim).map(c => c.trim());
+            const [codigo, nome, categoria, unidade, quantidade, estoqueMinimo, localizacao] = cols;
+            if (!codigo || !nome || isNaN(parseFloat(quantidade)))
+                continue;
+            newItems.push({ id: uid(), codigo, nome, categoria: categoria || "", unidade: unidade || "un", quantidade: parseFloat(quantidade) || 0, estoqueMinimo: parseFloat(estoqueMinimo) || 0, localizacao: localizacao || "" });
+        }
+        if (newItems.length > 0)
+            await persistItems([...newItems, ...items]);
+        setImportText("");
+        setModal(null);
+    }
+    return (React.createElement("div", null,
+        React.createElement("header", { className: "view-head" },
+            React.createElement("div", null,
+                React.createElement("h1", null, "Itens do estoque"),
+                React.createElement("p", { className: "subtitle" },
+                    items.length,
+                    " item(ns) cadastrado(s)")),
+            React.createElement("div", { className: "head-actions" },
+                React.createElement("button", { className: "btn btn-ghost", onClick: () => setModal("import") },
+                    React.createElement(IconUpload, { size: 15 }),
+                    " Importar CSV"),
+                React.createElement("button", { className: "btn btn-primary", onClick: openAdd },
+                    React.createElement(IconPlus, { size: 15 }),
+                    " Novo item"))),
+        React.createElement("div", { className: "toolbar" },
+            React.createElement("div", { className: "search-box" },
+                React.createElement(IconSearch, { size: 15 }),
+                React.createElement("input", { placeholder: "Buscar por c\u00F3digo, nome ou local...", value: query, onChange: e => setQuery(e.target.value) })),
+            React.createElement("select", { className: "select", value: catFilter, onChange: e => setCatFilter(e.target.value) },
+                React.createElement("option", { value: "" }, "Todas as categorias"),
+                categorias.map(c => React.createElement("option", { key: c, value: c }, c)))),
+        items.length === 0 ? (React.createElement("div", { className: "empty-state" },
+            React.createElement(IconPackage, { size: 32 }),
+            React.createElement("h3", null, "Nenhum item cadastrado ainda"),
+            React.createElement("p", null, "Adicione seu primeiro item ou importe uma lista via CSV para come\u00E7ar."),
+            React.createElement("button", { className: "btn btn-primary", onClick: openAdd },
+                React.createElement(IconPlus, { size: 15 }),
+                " Novo item"))) : (React.createElement("div", { className: "table-wrap" },
+            React.createElement("table", null,
+                React.createElement("thead", null,
+                    React.createElement("tr", null,
+                        React.createElement("th", null, "C\u00F3digo"),
+                        React.createElement("th", null, "Nome"),
+                        React.createElement("th", null, "Categoria"),
+                        React.createElement("th", null, "Local"),
+                        React.createElement("th", null, "N\u00EDvel"),
+                        React.createElement("th", null, "Qtd."),
+                        React.createElement("th", null, "M\u00EDn."),
+                        React.createElement("th", null))),
+                React.createElement("tbody", null,
+                    filtered.map(i => {
+                        const status = stockStatus(i);
+                        return (React.createElement("tr", { key: i.id },
+                            React.createElement("td", { className: "mono" }, i.codigo),
+                            React.createElement("td", null, i.nome),
+                            React.createElement("td", { className: "muted-cell" }, i.categoria || "—"),
+                            React.createElement("td", { className: "muted-cell" }, i.localizacao || "—"),
+                            React.createElement("td", null,
+                                React.createElement(Gauge, { item: i })),
+                            React.createElement("td", { className: "mono" },
+                                fmtNum(i.quantidade),
+                                " ",
+                                i.unidade),
+                            React.createElement("td", { className: "mono muted-cell" }, fmtNum(i.estoqueMinimo)),
+                            React.createElement("td", { className: "row-actions" },
+                                status === "danger" && React.createElement(Badge, { status: "danger" }, "baixo"),
+                                React.createElement("button", { className: "icon-btn", onClick: () => openEdit(i) },
+                                    React.createElement(IconEdit, { size: 14 })),
+                                React.createElement("button", { className: "icon-btn icon-btn-danger", onClick: () => setConfirmDelete(i.id) },
+                                    React.createElement(IconTrash, { size: 14 })))));
+                    }),
+                    filtered.length === 0 && React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 8, className: "empty-mini", style: { padding: "24px" } }, "Nenhum item corresponde \u00E0 busca.")))))),
+        (modal === "add" || modal === "edit") && (React.createElement(Modal, { title: modal === "add" ? "Novo item" : "Editar item", onClose: () => setModal(null) },
+            React.createElement("form", { onSubmit: submitForm, className: "form-grid" },
+                React.createElement("label", null,
+                    "C\u00F3digo",
+                    React.createElement("input", { required: true, value: form.codigo, onChange: e => setForm({ ...form, codigo: e.target.value }), placeholder: "EX: PAR-0012" })),
+                React.createElement("label", null,
+                    "Nome",
+                    React.createElement("input", { required: true, value: form.nome, onChange: e => setForm({ ...form, nome: e.target.value }), placeholder: "Parafuso sextavado M6" })),
+                React.createElement("label", null,
+                    "Categoria",
+                    React.createElement("input", { value: form.categoria, onChange: e => setForm({ ...form, categoria: e.target.value }), placeholder: "Fixadores" })),
+                React.createElement("label", null,
+                    "Unidade",
+                    React.createElement("input", { value: form.unidade, onChange: e => setForm({ ...form, unidade: e.target.value }), placeholder: "un, cx, kg..." })),
+                React.createElement("label", null,
+                    "Quantidade atual",
+                    React.createElement("input", { type: "number", step: "any", value: form.quantidade, onChange: e => setForm({ ...form, quantidade: e.target.value }) })),
+                React.createElement("label", null,
+                    "Estoque m\u00EDnimo",
+                    React.createElement("input", { type: "number", step: "any", value: form.estoqueMinimo, onChange: e => setForm({ ...form, estoqueMinimo: e.target.value }) })),
+                React.createElement("label", { className: "span-2" },
+                    "Localiza\u00E7\u00E3o",
+                    React.createElement("input", { value: form.localizacao, onChange: e => setForm({ ...form, localizacao: e.target.value }), placeholder: "Prateleira A3" })),
+                React.createElement("div", { className: "form-actions span-2" },
+                    React.createElement("button", { type: "button", className: "btn btn-ghost", onClick: () => setModal(null) }, "Cancelar"),
+                    React.createElement("button", { type: "submit", className: "btn btn-primary" }, "Salvar item"))))),
+        modal === "import" && (React.createElement(Modal, { title: "Importar itens via CSV", onClose: () => setModal(null), wide: true },
+            React.createElement("p", { className: "hint" },
+                "Cole uma linha por item, valores separados por v\u00EDrgula ou ponto e v\u00EDrgula, na ordem:",
+                React.createElement("br", null),
+                React.createElement("span", { className: "mono" }, "c\u00F3digo, nome, categoria, unidade, quantidade, estoque m\u00EDnimo, localiza\u00E7\u00E3o")),
+            React.createElement("textarea", { className: "import-area", rows: 10, placeholder: "PAR-0012, Parafuso sextavado M6, Fixadores, un, 340, 100, Prateleira A3\nTUB-0045, Tubo PVC 25mm, Hidráulica, m, 12, 20, Prateleira B1", value: importText, onChange: e => setImportText(e.target.value) }),
+            React.createElement("div", { className: "form-actions" },
+                React.createElement("button", { type: "button", className: "btn btn-ghost", onClick: () => setModal(null) }, "Cancelar"),
+                React.createElement("button", { type: "button", className: "btn btn-primary", onClick: doImport },
+                    React.createElement(IconUpload, { size: 15 }),
+                    " Importar")))),
+        confirmDelete && (React.createElement(Modal, { title: "Excluir item", onClose: () => setConfirmDelete(null) },
+            React.createElement("p", null, "Tem certeza que deseja excluir este item? Essa a\u00E7\u00E3o n\u00E3o pode ser desfeita."),
+            React.createElement("div", { className: "form-actions" },
+                React.createElement("button", { className: "btn btn-ghost", onClick: () => setConfirmDelete(null) }, "Cancelar"),
+                React.createElement("button", { className: "btn btn-danger", onClick: () => doDelete(confirmDelete) },
+                    React.createElement(IconTrash, { size: 15 }),
+                    " Excluir"))))));
+}
+function MovimentacoesView({ items, movements, persistItems, persistMovements }) {
+    const [itemId, setItemId] = useState("");
+    const [tipo, setTipo] = useState("entrada");
+    const [quantidade, setQuantidade] = useState("");
+    const [responsavel, setResponsavel] = useState("");
+    const [observacao, setObservacao] = useState("");
+    const [warning, setWarning] = useState("");
+    const recent = useMemo(() => [...movements].sort((a, b) => new Date(b.data) - new Date(a.data)).slice(0, 30), [movements]);
+    async function submit(e) {
+        e.preventDefault();
+        setWarning("");
+        const item = items.find(i => i.id === itemId);
+        const qty = Number(quantidade);
+        if (!item || !qty || qty <= 0)
+            return;
+        if (tipo === "saida" && qty > Number(item.quantidade))
+            setWarning(`Atenção: saldo atual é ${fmtNum(item.quantidade)} ${item.unidade}. A saída deixará o saldo negativo.`);
+        const novaQtd = tipo === "entrada" ? Number(item.quantidade) + qty : Number(item.quantidade) - qty;
+        await persistItems(items.map(i => i.id === item.id ? { ...i, quantidade: novaQtd } : i));
+        const mov = { id: uid(), itemId: item.id, itemNome: item.nome, itemCodigo: item.codigo, tipo, quantidade: qty, responsavel: responsavel || "—", observacao, data: new Date().toISOString() };
+        await persistMovements([mov, ...movements]);
+        setItemId("");
+        setQuantidade("");
+        setResponsavel("");
+        setObservacao("");
+    }
+    return (React.createElement("div", null,
+        React.createElement("header", { className: "view-head" },
+            React.createElement("div", null,
+                React.createElement("h1", null, "Movimenta\u00E7\u00F5es"),
+                React.createElement("p", { className: "subtitle" }, "Registrar entrada ou sa\u00EDda de itens do almoxarifado"))),
+        items.length === 0 ? (React.createElement("div", { className: "empty-state" },
+            React.createElement(IconList, { size: 32 }),
+            React.createElement("h3", null, "Cadastre itens primeiro"),
+            React.createElement("p", null, "Voc\u00EA precisa de ao menos um item cadastrado para registrar movimenta\u00E7\u00F5es."))) : (React.createElement(React.Fragment, null,
+            React.createElement("section", { className: "panel" },
+                React.createElement("form", { onSubmit: submit, className: "mov-form" },
+                    React.createElement("div", { className: "mov-type" },
+                        React.createElement("button", { type: "button", className: "type-btn type-entrada" + (tipo === "entrada" ? " active" : ""), onClick: () => setTipo("entrada") },
+                            React.createElement(IconDown, { size: 16 }),
+                            " Entrada"),
+                        React.createElement("button", { type: "button", className: "type-btn type-saida" + (tipo === "saida" ? " active" : ""), onClick: () => setTipo("saida") },
+                            React.createElement(IconUp, { size: 16 }),
+                            " Sa\u00EDda")),
+                    React.createElement("div", { className: "form-grid" },
+                        React.createElement("label", { className: "span-2" },
+                            "Item",
+                            React.createElement(ItemPicker, { items: items, value: itemId, onChange: setItemId })),
+                        React.createElement("label", null,
+                            "Quantidade",
+                            React.createElement("input", { type: "number", step: "any", min: "0", required: true, value: quantidade, onChange: e => setQuantidade(e.target.value) })),
+                        React.createElement("label", null,
+                            "Respons\u00E1vel",
+                            React.createElement("input", { value: responsavel, onChange: e => setResponsavel(e.target.value), placeholder: "Nome de quem retirou/entregou" })),
+                        React.createElement("label", { className: "span-2" },
+                            "Observa\u00E7\u00E3o",
+                            React.createElement("input", { value: observacao, onChange: e => setObservacao(e.target.value), placeholder: "Opcional" }))),
+                    warning && React.createElement("div", { className: "warning-box" },
+                        React.createElement(IconAlert, { size: 14 }),
+                        " ",
+                        warning),
+                    React.createElement("div", { className: "form-actions" },
+                        React.createElement("button", { type: "submit", className: "btn btn-primary", disabled: !itemId }, "Registrar movimenta\u00E7\u00E3o")))),
+            React.createElement("section", { className: "panel", style: { marginTop: 20 } },
+                React.createElement("div", { className: "panel-head" },
+                    React.createElement("h2", null, "Movimenta\u00E7\u00F5es recentes")),
+                React.createElement("div", { className: "table-wrap" },
+                    React.createElement("table", null,
+                        React.createElement("thead", null,
+                            React.createElement("tr", null,
+                                React.createElement("th", null, "Data"),
+                                React.createElement("th", null, "Item"),
+                                React.createElement("th", null, "Tipo"),
+                                React.createElement("th", null, "Qtd."),
+                                React.createElement("th", null, "Respons\u00E1vel"),
+                                React.createElement("th", null, "Obs."))),
+                        React.createElement("tbody", null,
+                            recent.map(m => (React.createElement("tr", { key: m.id },
+                                React.createElement("td", { className: "muted-cell" }, fmtDate(m.data)),
+                                React.createElement("td", null,
+                                    m.itemCodigo,
+                                    " \u2014 ",
+                                    m.itemNome),
+                                React.createElement("td", null, m.tipo === "entrada" ? React.createElement(Badge, { status: "success" }, "entrada") : React.createElement(Badge, { status: "danger" }, "sa\u00EDda")),
+                                React.createElement("td", { className: "mono" }, fmtNum(m.quantidade)),
+                                React.createElement("td", { className: "muted-cell" }, m.responsavel),
+                                React.createElement("td", { className: "muted-cell" }, m.observacao || "—")))),
+                            recent.length === 0 && React.createElement("tr", null,
+                                React.createElement("td", { colSpan: 6, className: "empty-mini", style: { padding: "24px" } }, "Nenhuma movimenta\u00E7\u00E3o ainda."))))))))));
+}
+function RelatoriosView({ items, movements }) {
+    const [tipoFiltro, setTipoFiltro] = useState("");
+    const [itemFiltro, setItemFiltro] = useState("");
+    const [dataInicio, setDataInicio] = useState("");
+    const [dataFim, setDataFim] = useState("");
+    const filtered = useMemo(() => {
+        return movements.filter(m => {
+            if (tipoFiltro && m.tipo !== tipoFiltro)
+                return false;
+            if (itemFiltro && m.itemId !== itemFiltro)
+                return false;
+            const d = new Date(m.data);
+            if (dataInicio && d < new Date(dataInicio))
+                return false;
+            if (dataFim && d > new Date(dataFim + "T23:59:59"))
+                return false;
+            return true;
+        }).sort((a, b) => new Date(b.data) - new Date(a.data));
+    }, [movements, tipoFiltro, itemFiltro, dataInicio, dataFim]);
+    const totalEntradas = filtered.filter(m => m.tipo === "entrada").reduce((s, m) => s + Number(m.quantidade), 0);
+    const totalSaidas = filtered.filter(m => m.tipo === "saida").reduce((s, m) => s + Number(m.quantidade), 0);
+    function exportCsv() {
+        const header = "Data,Codigo,Item,Tipo,Quantidade,Responsavel,Observacao";
+        const rows = filtered.map(m => [new Date(m.data).toLocaleString("pt-BR"), m.itemCodigo, m.itemNome, m.tipo, m.quantidade, m.responsavel, (m.observacao || "").replace(/,/g, ";")].join(","));
+        const csv = [header, ...rows].join("\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "relatorio-movimentacoes.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+    return (React.createElement("div", null,
+        React.createElement("header", { className: "view-head" },
+            React.createElement("div", null,
+                React.createElement("h1", null, "Relat\u00F3rios"),
+                React.createElement("p", { className: "subtitle" }, "Hist\u00F3rico completo de movimenta\u00E7\u00F5es")),
+            React.createElement("div", { className: "head-actions" },
+                React.createElement("button", { className: "btn btn-ghost", onClick: exportCsv },
+                    React.createElement(IconDownload, { size: 15 }),
+                    " Exportar CSV"))),
+        React.createElement("section", { className: "panel" },
+            React.createElement("div", { className: "filters-grid" },
+                React.createElement("label", null,
+                    "Tipo",
+                    React.createElement("select", { className: "select", value: tipoFiltro, onChange: e => setTipoFiltro(e.target.value) },
+                        React.createElement("option", { value: "" }, "Todos"),
+                        React.createElement("option", { value: "entrada" }, "Entrada"),
+                        React.createElement("option", { value: "saida" }, "Sa\u00EDda"))),
+                React.createElement("label", null,
+                    "Item",
+                    React.createElement(ItemPicker, { items: items, value: itemFiltro, onChange: setItemFiltro, placeholder: "Todos os itens" })),
+                React.createElement("label", null,
+                    "De",
+                    React.createElement("input", { type: "date", value: dataInicio, onChange: e => setDataInicio(e.target.value) })),
+                React.createElement("label", null,
+                    "At\u00E9",
+                    React.createElement("input", { type: "date", value: dataFim, onChange: e => setDataFim(e.target.value) })))),
+        React.createElement("div", { className: "cards-grid", style: { marginTop: 16, marginBottom: 16 } },
+            React.createElement("div", { className: "stat-card" },
+                React.createElement("div", { className: "stat-icon icon-success" },
+                    React.createElement(IconDown, { size: 18 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "stat-value" }, fmtNum(totalEntradas)),
+                    React.createElement("div", { className: "stat-label" }, "total de entradas"))),
+            React.createElement("div", { className: "stat-card" },
+                React.createElement("div", { className: "stat-icon icon-danger" },
+                    React.createElement(IconUp, { size: 18 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "stat-value" }, fmtNum(totalSaidas)),
+                    React.createElement("div", { className: "stat-label" }, "total de sa\u00EDdas"))),
+            React.createElement("div", { className: "stat-card" },
+                React.createElement("div", { className: "stat-icon icon-steel" },
+                    React.createElement(IconClipboard, { size: 18 })),
+                React.createElement("div", null,
+                    React.createElement("div", { className: "stat-value" }, fmtNum(filtered.length)),
+                    React.createElement("div", { className: "stat-label" }, "registros no filtro")))),
+        React.createElement("div", { className: "table-wrap" },
+            React.createElement("table", null,
+                React.createElement("thead", null,
+                    React.createElement("tr", null,
+                        React.createElement("th", null, "Data"),
+                        React.createElement("th", null, "C\u00F3digo"),
+                        React.createElement("th", null, "Item"),
+                        React.createElement("th", null, "Tipo"),
+                        React.createElement("th", null, "Qtd."),
+                        React.createElement("th", null, "Respons\u00E1vel"),
+                        React.createElement("th", null, "Obs."))),
+                React.createElement("tbody", null,
+                    filtered.map(m => (React.createElement("tr", { key: m.id },
+                        React.createElement("td", { className: "muted-cell" }, fmtDate(m.data)),
+                        React.createElement("td", { className: "mono" }, m.itemCodigo),
+                        React.createElement("td", null, m.itemNome),
+                        React.createElement("td", null, m.tipo === "entrada" ? React.createElement(Badge, { status: "success" }, "entrada") : React.createElement(Badge, { status: "danger" }, "sa\u00EDda")),
+                        React.createElement("td", { className: "mono" }, fmtNum(m.quantidade)),
+                        React.createElement("td", { className: "muted-cell" }, m.responsavel),
+                        React.createElement("td", { className: "muted-cell" }, m.observacao || "—")))),
+                    filtered.length === 0 && React.createElement("tr", null,
+                        React.createElement("td", { colSpan: 7, className: "empty-mini", style: { padding: "24px" } }, "Nenhum registro para os filtros selecionados.")))))));
+}
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+.almox-app {
+  --graphite:#1C2530; --graphite-light:#2A3644; --steel:#3B6E8F; --steel-light:#EAF1F5;
+  --amber:#E8A33D; --amber-light:#FCF1DF; --danger:#C0503A; --danger-light:#FAEAE5;
+  --success:#4C8C6B; --success-light:#E9F4EE; --bg:#F5F6F8; --white:#FFFFFF; --border:#E1E4E8;
+  --text:#1C2530; --text-muted:#6B7785;
+  display:flex; min-height:100vh; background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; font-size:14px; line-height:1.5;
+}
+.almox-app *{box-sizing:border-box;}
+.mono{font-family:"IBM Plex Mono",ui-monospace,"SF Mono",Consolas,monospace;}
+.sidebar{width:220px;flex-shrink:0;background:var(--graphite);color:#fff;display:flex;flex-direction:column;padding:20px 14px;gap:24px;}
+.brand{display:flex;align-items:center;gap:10px;padding:0 6px;}
+.brand-mark{width:34px;height:34px;border-radius:8px;background:var(--amber);color:var(--graphite);display:flex;align-items:center;justify-content:center;}
+.brand-title{font-family:"Space Grotesk",sans-serif;font-weight:700;font-size:13px;letter-spacing:0.03em;line-height:1.25;}
+.brand-sub{font-size:11px;color:#9CA9B8;}
+.nav{display:flex;flex-direction:column;gap:2px;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:7px;border:none;background:transparent;color:#C7D0DA;font-size:13.5px;cursor:pointer;text-align:left;width:100%;transition:background .15s,color .15s;}
+.nav-item:hover{background:var(--graphite-light);color:#fff;}
+.nav-item.active{background:var(--graphite-light);color:#fff;box-shadow:inset 3px 0 0 var(--amber);}
+.nav-count{margin-left:auto;font-size:11px;background:rgba(255,255,255,0.1);padding:1px 6px;border-radius:20px;}
+.sidebar-alert{margin-top:auto;display:flex;align-items:center;gap:8px;background:rgba(232,163,61,0.15);border:1px solid rgba(232,163,61,0.35);color:var(--amber);padding:10px;border-radius:8px;font-size:12px;cursor:pointer;text-align:left;}
+.main{flex:1;padding:28px 32px;min-width:0;overflow-x:auto;}
+.error-banner{background:var(--danger-light);color:var(--danger);padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:13px;}
+.loading-screen{display:flex;align-items:center;gap:10px;color:var(--text-muted);padding:60px 0;justify-content:center;}
+.spin{animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.view-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:22px;gap:12px;flex-wrap:wrap;}
+.view-head h1{font-family:"Space Grotesk",sans-serif;font-size:22px;font-weight:700;margin:0;}
+.subtitle{color:var(--text-muted);margin:4px 0 0;font-size:13px;}
+.head-actions{display:flex;gap:8px;}
+.cards-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:22px;}
+.stat-card{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:16px;display:flex;align-items:center;gap:12px;}
+.stat-icon{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.icon-steel{background:var(--steel-light);color:var(--steel);}
+.icon-success{background:var(--success-light);color:var(--success);}
+.icon-danger{background:var(--danger-light);color:var(--danger);}
+.stat-value{font-family:"Space Grotesk",sans-serif;font-size:20px;font-weight:700;}
+.stat-label{font-size:12px;color:var(--text-muted);}
+.split-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;}
+.panel{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:18px;}
+.panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+.panel-head h2{font-size:14px;font-weight:600;display:flex;align-items:center;gap:7px;margin:0;}
+.link-btn{background:none;border:none;color:var(--steel);font-size:12.5px;cursor:pointer;}
+.mini-list{display:flex;flex-direction:column;gap:10px;}
+.mini-row{display:flex;align-items:center;gap:10px;font-size:13px;}
+.mini-info{display:flex;flex-direction:column;flex:1;min-width:0;}
+.mini-code{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--text-muted);}
+.mini-sub{font-size:11px;color:var(--text-muted);}
+.mini-qty{font-family:"IBM Plex Mono",monospace;font-size:12.5px;white-space:nowrap;}
+.empty-mini{color:var(--text-muted);font-size:13px;text-align:center;padding:12px 0;}
+.txt-success{color:var(--success);} .txt-danger{color:var(--danger);}
+.gauge{width:70px;flex-shrink:0;}
+.gauge-track{position:relative;height:6px;background:#EEF0F2;border-radius:4px;overflow:visible;}
+.gauge-fill{height:100%;border-radius:4px;transition:width .2s;}
+.gauge-success{background:var(--success);} .gauge-amber{background:var(--amber);} .gauge-danger{background:var(--danger);}
+.gauge-min{position:absolute;top:-2px;width:2px;height:10px;background:var(--graphite);opacity:0.4;}
+.toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.search-box{display:flex;align-items:center;gap:8px;background:var(--white);border:1px solid var(--border);border-radius:8px;padding:8px 12px;min-width:260px;flex:1;color:var(--text-muted);}
+.search-box input{border:none;outline:none;flex:1;font-size:13.5px;color:var(--text);background:transparent;}
+.select{border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--white);font-size:13.5px;color:var(--text);}
+.filters-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;align-items:end;}
+.filters-grid label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--text-muted);}
+.filters-grid input{border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13.5px;}
+.btn{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:9px 14px;font-size:13.5px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:filter .15s,background .15s;}
+.btn:disabled{opacity:0.5;cursor:not-allowed;}
+.btn-primary{background:var(--steel);color:#fff;}
+.btn-primary:hover:not(:disabled){filter:brightness(1.08);}
+.btn-ghost{background:var(--white);border-color:var(--border);color:var(--text);}
+.btn-ghost:hover{background:#F0F2F4;}
+.btn-danger{background:var(--danger);color:#fff;}
+.icon-btn{background:none;border:none;padding:5px;border-radius:6px;cursor:pointer;color:var(--text-muted);display:inline-flex;}
+.icon-btn:hover{background:#F0F2F4;color:var(--text);}
+.icon-btn-danger:hover{background:var(--danger-light);color:var(--danger);}
+.table-wrap{background:var(--white);border:1px solid var(--border);border-radius:10px;overflow:auto;}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px;}
+thead th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted);padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap;}
+tbody td{padding:10px 14px;border-bottom:1px solid #F0F1F3;vertical-align:middle;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover{background:#FAFBFC;}
+.muted-cell{color:var(--text-muted);}
+.row-actions{display:flex;align-items:center;gap:6px;justify-content:flex-end;}
+.badge{font-size:11px;padding:3px 8px;border-radius:20px;font-weight:600;white-space:nowrap;}
+.badge-danger{background:var(--danger-light);color:var(--danger);}
+.badge-success{background:var(--success-light);color:var(--success);}
+.badge-amber{background:var(--amber-light);color:#9C6C1F;}
+.empty-state{background:var(--white);border:1px dashed var(--border);border-radius:12px;padding:48px 24px;text-align:center;color:var(--text-muted);display:flex;flex-direction:column;align-items:center;gap:8px;}
+.empty-state h3{color:var(--text);font-size:15px;margin:4px 0 0;}
+.empty-state p{max-width:320px;margin:0 0 8px;font-size:13px;}
+.modal-backdrop{position:fixed;inset:0;background:rgba(28,37,48,0.45);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px;}
+.modal{background:#fff;border-radius:12px;width:420px;max-width:100%;max-height:88vh;overflow-y:auto;}
+.modal-wide{width:560px;}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);}
+.modal-head h3{margin:0;font-size:15px;font-weight:600;}
+.modal-body{padding:18px;}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.form-grid label{display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:var(--text-muted);}
+.form-grid input{border:1px solid var(--border);border-radius:8px;padding:9px 10px;font-size:13.5px;color:var(--text);}
+.span-2{grid-column:span 2;}
+.form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px;}
+.hint{font-size:12.5px;color:var(--text-muted);margin:0 0 10px;line-height:1.6;}
+.import-area{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px;font-family:"IBM Plex Mono",monospace;font-size:12.5px;resize:vertical;margin-bottom:12px;}
+.mov-form{display:flex;flex-direction:column;gap:14px;}
+.mov-type{display:flex;gap:8px;}
+.type-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--white);color:var(--text-muted);cursor:pointer;font-size:13.5px;font-weight:500;}
+.type-entrada.active{background:var(--success-light);border-color:var(--success);color:var(--success);}
+.type-saida.active{background:var(--danger-light);border-color:var(--danger);color:var(--danger);}
+.warning-box{display:flex;align-items:center;gap:8px;background:var(--amber-light);color:#9C6C1F;padding:9px 12px;border-radius:8px;font-size:12.5px;}
+.picker{position:relative;}
+.picker-input{width:100%;display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:9px 10px;background:var(--white);font-size:13.5px;cursor:pointer;color:var(--text);}
+.muted{color:var(--text-muted);}
+.picker-menu{position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(28,37,48,0.12);z-index:40;max-height:280px;display:flex;flex-direction:column;}
+.picker-search{display:flex;align-items:center;gap:7px;padding:9px 10px;border-bottom:1px solid var(--border);color:var(--text-muted);}
+.picker-search input{border:none;outline:none;flex:1;font-size:13px;}
+.picker-list{overflow-y:auto;}
+.picker-item{width:100%;display:flex;align-items:center;gap:8px;padding:8px 10px;border:none;background:none;text-align:left;cursor:pointer;font-size:12.5px;}
+.picker-item:hover{background:#F5F6F8;}
+.picker-code{font-family:"IBM Plex Mono",monospace;color:var(--text-muted);flex-shrink:0;}
+.picker-qty{margin-left:auto;color:var(--text-muted);font-family:"IBM Plex Mono",monospace;flex-shrink:0;}
+.picker-empty{padding:14px;text-align:center;color:var(--text-muted);font-size:12.5px;}
+.config-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#F5F6F8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;padding:20px;}
+.config-card{max-width:420px;background:#fff;border:1px solid #E1E4E8;border-radius:12px;padding:28px;text-align:center;color:#1C2530;}
+.config-card svg{color:#E8A33D;margin-bottom:10px;}
+.config-card code{background:#F0F2F4;padding:2px 6px;border-radius:4px;font-family:monospace;font-size:12.5px;}
+@media (max-width:760px){
+  .almox-app{flex-direction:column;}
+  .sidebar{width:100%;flex-direction:row;align-items:center;padding:12px 16px;gap:16px;}
+  .brand-sub{display:none;}
+  .nav{flex-direction:row;overflow-x:auto;}
+  .sidebar-alert{display:none;}
+  .main{padding:18px;}
+  .split-grid{grid-template-columns:1fr;}
+  .form-grid{grid-template-columns:1fr;}
+  .span-2{grid-column:span 1;}
+}
+`;
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
+
+<\/script>
+</body>
+</html>
